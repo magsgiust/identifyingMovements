@@ -1,0 +1,160 @@
+---
+title: "Identifying Movements"
+output: html_document
+---
+Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). The goal of this project is to predict the manner in which they did the exercise (the "classe" variable).
+More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+###Load the Data
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment="Training Dimensions"}
+file_trn <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+training <- read.csv(file_trn,header=TRUE,na.strings=c("NA","","#DIV/0!"))
+dim(training)
+```  
+
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment="Testing Dimensions",autodep=TRUE}
+file_tst <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+testing <- read.csv(file_tst,header=TRUE,na.strings=c("NA","","#DIV/0!"))
+dim(testing)
+```
+
+This data set is provided by: http://groupware.les.inf.puc-rio.br/har 
+
+##Method for Building the Model  
+Create validation set from the training data set
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment="Training Dimensions",autodep=TRUE}
+library(caret)
+set.seed(111)
+inTrain <- createDataPartition(y=training$classe,
+                               p=.75,list=FALSE)
+training <- training[inTrain,]
+validation <- training[-inTrain,]
+dim(training)
+```
+
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment="Validation Dimensions",autodep=TRUE}
+dim(validation)
+```
+
+###Pre-Processing  
+1. Remove features adding little to no additional information  
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment=NA,autodep=TRUE}
+library(dplyr); library(caret)
+# near zero values
+set.seed(111)
+  nsv <- nearZeroVar(training,saveMetrics = TRUE)
+  nonzero <- rownames(nsv[nsv$nzv==FALSE,])
+  training <- select(training,one_of(nonzero))
+  validation <- select(validation,one_of(nonzero))
+  
+# majority NA's
+  y <- length(colnames(training))
+  nas <- c(1,3:5)
+  for (i in 6:y) {
+    if(sum(is.na(training[i]))>nrow(training)/2)
+      nas <- c(nas,i)
+  }
+  training <- training[-nas]
+  validation <- validation[-nas]
+```  
+2. Standardize numerical values  
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment=NA,autodep=TRUE}
+# standardizing: using center and scale as opposed to Log because of negative values
+  library(dplyr); library(caret)
+  set.seed(111)
+  preObj <- preProcess(training[,2:54],method=c("center","scale"))
+    training.preProc <- predict(preObj,training[,2:54])
+    training <- cbind(training[1],training.preProc,training[55])
+  
+# standardize validation using same parameters set by training
+  validation.preProc <- predict(preObj,validation[,2:54])
+    validation <- cbind(validation[1],validation.preProc,validation[55])
+```  
+3. Select features 
+Through correlations between each variable, including the dependent variable, we were able to see that interdependence exists within each of the major areas analyzed, forearm, belt, arm, and dumbbell.  By using the variable within each group that is most highly correlated with class, we are able to reduce our features to 5 (including the distinct users).  
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment=NA,autodep=TRUE}
+    library(dplyr); library(caret)
+# convert classe to numeric in order to explore correlations
+  training <- mutate(training,classe.numeric = 
+                           (as.integer(ifelse(classe=="A",1,
+                                    ifelse(classe=="B",2,
+                                           ifelse(classe=="C",3,
+                                                  ifelse(classe=="D",4,5)))))))
+# how do all variables correlate with each other
+  train.cor <- select(training,-classe,-user_name)
+  mcor <- cor(train.cor,method="spearman")
+  colnames(mcor) <- row.names(mcor)
+  for (i in 1:nrow(mcor)) {
+    mcor[i,i]=0
+  }
+  
+  groups <- c("belt","_arm_","dumbbell","forearm")
+  myvars <- as.character(c())
+  for (j in 1:length(groups)) {
+    mcor <- as.data.frame(mcor)
+    gp.j <- as.data.frame(mcor[grep(groups[j],row.names(mcor)),
+                               length(colnames(mcor))])
+    colnames(gp.j) <- "classe.numeric"
+    gp.j <- cbind(measure=as.character(row.names(
+                        mcor[grep(groups[j],row.names(mcor)),]
+                      )),gp.j)
+    top <- as.integer(order(gp.j$classe.numeric,decreasing=TRUE))[1]
+    top <- gp.j[as.integer(top),][1]
+    myvars <- c(myvars,as.character(top[1,1]))
+  }
+  myvars <- c("user_name",myvars,"classe")
+  training <- select(training,one_of(myvars))
+  validation <- select(validation,one_of(myvars))
+```    
+4. Visualize the interactions of our features  
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment=NA,autodep=TRUE}
+library(ggplot2);library(caret);library(gridExtra)
+# feature plot
+featurePlot(x=training[,1:6],
+            y=training$classe,
+            plot="pairs")
+
+# density plots
+a <- qplot(training$pitch_forearm,colour=training$classe,geom="density")
+b <- qplot(training$roll_belt,colour=training$classe,geom="density")
+c <- qplot(training$magnet_arm_x,colour=training$classe,geom="density")
+d <- qplot(training$magnet_dumbbell_z,colour=training$classe,geom="density")
+
+grid.arrange(a,b,c,d, ncol = 2, nrow = 2)
+```
+
+###Train the Data  
+1. First, we build the model from our training data set. Based on the dependent variable and the features, it appears a random forest will give good results.  
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment=NA,autodep=TRUE,cache=TRUE}
+library(ggplot2);library(caret);library(gridExtra)
+set.seed(111)
+  modFit <- train(classe~.,method="rf",ntree=50,data=training)
+  pred <- predict(modFit,training)
+  # plot tree
+  plot(modFit$finalModel,uniform=T,main="ClassificationTree")
+```  
+2. Next, we look at the model's performance through a confusion matrix.  
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment=NA,autodep=TRUE}
+  confusionMatrix(pred,training$classe)
+```  
+3. We would estimate our Out-of-Sample Error to be higher than our in-sample error seen above.  
+For an estimate of our out of sample error, we will predict the classes on our validation data set, which we have not used in our exploration or in pre-processing. The resulting confusion matrix and measures of error from our validation data will be our source for our expected out of sample error.  
+```{r echo=FALSE,message=FALSE,warning=FALSE,strip.white=TRUE,comment=NA,autodep=TRUE}
+  pred.valid <- predict(modFit,validation)
+  confusionMatrix(pred.valid,validation$classe)
+```  
+
+###Predict on Test Cases  
+```{r}
+test.nonzero <- nonzero[1:127]; 
+    testing <- select(testing,one_of(c(test.nonzero,"problem_id")))
+  testing <- testing[-nas]
+  testing.preProc <- predict(preObj,testing[,2:54])
+    testing <- cbind(testing[1],testing.preProc,testing[55])
+  testvars <- c(myvars[1:5],"problem_id")
+    testing <- select(testing,one_of(testvars))
+  pred.test <- predict(modFit,testing)
+  table(pred.test)
+```  
